@@ -16,11 +16,15 @@ module Middleman
           super
 
           @store = CollectionStore.new(self)
+          @collectors_by_name = {}
+          @collectors = Set.new
+          @realizedCollectors = {}
         end
 
         Contract None => Any
         def before_configuration
           app.add_to_config_context :collection, &method(:create_collection)
+          app.add_to_config_context :collector, &method(:create_collector)
           app.add_to_config_context :uri_match, &@store.method(:uri_match)
         end
 
@@ -35,8 +39,46 @@ module Middleman
           )
         end
 
+        attr_accessor :realizedCollectors
+        def create_collector(name, opts={})
+          parent = opts.fetch(:from, nil)
+
+          step = LazyCollectorStep.new
+
+          @collectors_by_name[name] = {}
+          @collectors_by_name[name][:step] = step
+          @collectors_by_name[name][:children] ||= Set.new
+
+          if parent
+            @collectors_by_name[parent] ||= {}
+            @collectors_by_name[parent][:children] ||= Set.new
+            @collectors_by_name[parent][:children] << name
+          else
+            @collectors << name
+          end
+
+          step
+        end
+
+        def realize_collector(key, data)
+          c = @collectors_by_name[key]
+          result = c[:step].dup.realize(data)
+
+          c[:children].each do |c2|
+            realize_collector(c2, result)
+          end
+
+          @realizedCollectors[key] = result
+        end
+
         Contract ResourceList => ResourceList
         def manipulate_resource_list(resources)
+          @realizedCollectors = {}
+
+          @collectors.each do |k|
+            realize_collector(k, resources)
+          end
+
           @store.manipulate_resource_list(resources)
         end
 
@@ -50,9 +92,39 @@ module Middleman
             extensions[:collections].collected
           end
 
+          def collector(name)
+            extensions[:collections].realizedCollectors[name]
+          end
+
           def pagination
             current_resource.data.pagination
           end
+        end
+      end
+
+      class LazyCollectorStep < Object
+        def initialize
+          @compuation = nil
+        end
+
+        def realize(data)
+          return data unless @compuation
+
+          $stderr.puts "Realizing: #{data}"
+
+          $stderr.puts "Compuation: #{@compuation}"
+          name, args, block = @compuation
+
+          result = data.send(name, *args, &block)
+
+          $stderr.puts "Result: #{result}"
+
+          @next_step.realize(result)
+        end
+
+        def method_missing(name, *args, &block)
+          @compuation = [name, args, block]
+          @next_step = LazyCollectorStep.new
         end
       end
     end

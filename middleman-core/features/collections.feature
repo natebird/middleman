@@ -1,4 +1,82 @@
 Feature: Collections
+  Scenario: Lazy query
+    Given a fixture app "collections-app"
+    And a file named "config.rb" with:
+      """
+      collector(:articles1).select do |r|
+        uri_match r.url, 'blog1/{year}-{month}-{day}-{title}.html'
+      end
+
+      collector(:everything).select do |r|
+        true
+      end
+
+      def get_tags(resource)
+        if resource.data.tags.is_a? String
+          resource.data.tags.split(',').map(&:strip)
+        else
+          resource.data.tags
+        end
+      end
+
+      def group_lookup(resource, sum)
+        results = Array(get_tags(resource)).map(&:to_s).map(&:to_sym)
+
+        results.each do |k|
+          sum[k] ||= []
+          sum[k] << resource
+        end
+      end
+
+      collector(:tags, from: :everything)
+          .select { |resource| resource.data.tags }
+          .each_with_object({}, &method(:group_lookup))
+
+      collector(:first_tag, from: :tags).keys.sort.first
+
+      class Wrapper
+        def initialize
+          @stuff = []
+        end
+
+        def <<(item)
+          @stuff << item
+        end
+      end
+
+      collector(:wrapped, from: :tags).reduce(Wrapper.new, :<<)
+      """
+    And a file named "source/index.html.erb" with:
+      """
+      <% collector(:articles1).each do |article| %>
+        Article1: <%= article.data.title %>
+      <% end %>
+
+      <% collector(:tags).each do |k, items| %>
+        Tag: <%= k %> (<%= items.length %>)
+        <% items.each do |article| %>
+          Article (<%= k %>): <%= article.data.title %>
+        <% end %>
+      <% end %>
+
+      First Tag: <%= collector(:first_tag) %>
+      """
+    Given the Server is running at "collections-app"
+    When I go to "index.html"
+    Then I should see 'Article1: Blog1 Newer Article'
+    And I should see 'Article1: Blog1 Another Article'
+    And I should see 'Tag: foo (4)'
+    And I should see 'Article (foo): Blog1 Newer Article'
+    And I should see 'Article (foo): Blog1 Another Article'
+    And I should see 'Article (foo): Blog2 Newer Article'
+    And I should see 'Article (foo): Blog2 Another Article'
+    And I should see 'Tag: bar (2)'
+    And I should see 'Article (bar): Blog1 Newer Article'
+    And I should see 'Article (bar): Blog2 Newer Article'
+    And I should see 'Tag: 120 (1)'
+    And I should see 'Article (120): Blog1 Another Article'
+    And I should see 'First Tag: 120'
+
   Scenario: Collect resource by proc or string
     Given a fixture app "collections-app"
     And a file named "config.rb" with:
