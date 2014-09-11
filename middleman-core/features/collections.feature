@@ -3,11 +3,11 @@ Feature: Collections
     Given a fixture app "collections-app"
     And a file named "config.rb" with:
       """
-      collector(:articles1).select do |r|
+      articles1 = resources.select do |r|
         uri_match r.url, 'blog1/{year}-{month}-{day}-{title}.html'
       end
 
-      collector(:everything).select do |r|
+      everything = resources.select do |r|
         true
       end
 
@@ -28,11 +28,11 @@ Feature: Collections
         end
       end
 
-      collector(:tags, from: :everything)
+      tags = everything
           .select { |resource| resource.data.tags }
           .each_with_object({}, &method(:group_lookup))
 
-      collector(:first_tag, from: :tags).keys.sort.first
+      first_tag = tags.keys.sort.first
 
       class Wrapper
         def initialize
@@ -44,7 +44,12 @@ Feature: Collections
         end
       end
 
-      collector(:wrapped, from: :tags).reduce(Wrapper.new, :<<)
+      wrapped = tags.reduce(Wrapper.new, :<<)
+
+      # Expose to templates
+      collector(:articles1, articles1)
+      set :tags, tags
+      set :first_tag, first_tag
       """
     And a file named "source/index.html.erb" with:
       """
@@ -52,14 +57,14 @@ Feature: Collections
         Article1: <%= article.data.title %>
       <% end %>
 
-      <% collector(:tags).each do |k, items| %>
+      <% config[:tags].value.each do |k, items| %>
         Tag: <%= k %> (<%= items.length %>)
         <% items.each do |article| %>
           Article (<%= k %>): <%= article.data.title %>
         <% end %>
       <% end %>
 
-      First Tag: <%= collector(:first_tag) %>
+      First Tag: <%= config[:first_tag].value %>
       """
     Given the Server is running at "collections-app"
     When I go to "index.html"
