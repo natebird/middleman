@@ -3,9 +3,10 @@ Feature: Collections
     Given a fixture app "collections-app"
     And a file named "config.rb" with:
       """
-      articles1 = resources.select do |r|
-        uri_match r.url, 'blog1/{year}-{month}-{day}-{title}.html'
-      end
+      articles1 = collection :articles1, resources.select { |r|
+        matcher = ::Middleman::Util::UriTemplates.uri_template('blog1/{year}-{month}-{day}-{title}.html')
+        ::Middleman::Util::UriTemplates.extract_params(matcher, ::Middleman::Util.normalize_path(r.url))
+      }
 
       everything = resources.select do |r|
         true
@@ -32,30 +33,32 @@ Feature: Collections
           .select { |resource| resource.data.tags }
           .each_with_object({}, &method(:group_lookup))
 
-      first_tag = tags.keys.sort.first
-
       class Wrapper
+        attr_reader :stuff
+
         def initialize
-          @stuff = []
+          @stuff = Set.new
         end
 
-        def <<(item)
-          @stuff << item
+        def <<((k, v))
+          @stuff << k
+          self
         end
       end
 
-      wrapped = tags.reduce(Wrapper.new, :<<)
+      collection :wrapped, tags.reduce(Wrapper.new, :<<)
 
-      # Expose to templates
-      collector(:articles1, articles1)
-      set :tags, tags
-      set :first_tag, first_tag
+      set :tags, tags # Expose to templates
+
+      collection :first_tag, tags.keys.sort.first
       """
     And a file named "source/index.html.erb" with:
       """
-      <% collector(:articles1).each do |article| %>
+      <% collection(:articles1).each do |article| %>
         Article1: <%= article.data.title %>
       <% end %>
+
+      Tag Count: <%= collection(:wrapped).stuff.length %>
 
       <% config[:tags].value.each do |k, items| %>
         Tag: <%= k %> (<%= items.length %>)
@@ -64,7 +67,7 @@ Feature: Collections
         <% end %>
       <% end %>
 
-      First Tag: <%= config[:first_tag].value %>
+      First Tag: <%= collection(:first_tag) %>
       """
     Given the Server is running at "collections-app"
     When I go to "index.html"
@@ -81,86 +84,26 @@ Feature: Collections
     And I should see 'Tag: 120 (1)'
     And I should see 'Article (120): Blog1 Another Article'
     And I should see 'First Tag: 120'
-
-  Scenario: Collect resource by proc or string
-    Given a fixture app "collections-app"
-    And a file named "config.rb" with:
-      """
-      collection as: :articles1,
-        where: proc { |resource|
-          uri_match resource.url, 'blog1/{year}-{month}-{day}-{title}.html'
-        }
-      collection as: :articles2,
-        where: 'blog2/{year}-{month}-{day}-{title}.html'
-      """
-    And a file named "source/index.html.erb" with:
-      """
-      <% collected.articles1.each do |article| %>
-        Article1: <%= article.data.title %>
-      <% end %>
-
-      <% collected.articles2.each do |article| %>
-        Article2: <%= article.data.title %>
-      <% end %>
-      """
-    Given the Server is running at "collections-app"
-    When I go to "index.html"
-    Then I should see 'Article1: Blog1 Newer Article'
-    And I should see 'Article1: Blog1 Another Article'
-    Then I should see 'Article2: Blog2 Newer Article'
-    And I should see 'Article2: Blog2 Another Article'
-
-  Scenario: Group collected resource by proc
-    Given a fixture app "collections-app"
-    And a file named "config.rb" with:
-      """
-      collection as: :tags,
-        where: proc { |resource| resource.data.tags },
-        group_by: proc { |resource|
-          if resource.data.tags.is_a? String
-            resource.data.tags.split(',').map(&:strip)
-          else
-            resource.data.tags
-          end
-        }
-      """
-    And a file named "source/index.html.erb" with:
-      """
-      <% collected[:tags].each do |k, items| %>
-        Tag: <%= k %> (<%= items.length %>)
-        <% items.each do |article| %>
-          Article (<%= k %>): <%= article.data.title %>
-        <% end %>
-      <% end %>
-      """
-    Given the Server is running at "collections-app"
-    When I go to "index.html"
-    Then I should see 'Tag: foo (4)'
-    And I should see 'Article (foo): Blog1 Newer Article'
-    And I should see 'Article (foo): Blog1 Another Article'
-    And I should see 'Article (foo): Blog2 Newer Article'
-    And I should see 'Article (foo): Blog2 Another Article'
-    And I should see 'Tag: bar (2)'
-    And I should see 'Article (bar): Blog1 Newer Article'
-    And I should see 'Article (bar): Blog2 Newer Article'
-    And I should see 'Tag: 120 (1)'
-    And I should see 'Article (120): Blog1 Another Article'
+    And I should see 'Tag Count: 3'
 
   Scenario: Collected resources update with file changes
     Given a fixture app "collections-app"
     And a file named "config.rb" with:
       """
-      collection as: :articles,
-        where: 'blog2/{year}-{month}-{day}-{title}.html'
+      collection :articles, resources.select { |r|
+        matcher = ::Middleman::Util::UriTemplates.uri_template('blog2/{year}-{month}-{day}-{title}.html')
+        ::Middleman::Util::UriTemplates.extract_params(matcher, ::Middleman::Util.normalize_path(r.url))
+      }
       """
     And a file named "source/index.html.erb" with:
       """
-      <% collected.articles.each do |article| %>
-        Article: <%= article.data.title %>
+      <% collection(:articles).each do |article| %>
+        Article: <%= article.data.title || article.source_file[:relative_path] %>
       <% end %>
       """
     Given the Server is running at "collections-app"
     When I go to "index.html"
+    Then I should not see "Article: index.html.erb"
     Then I should see 'Article: Blog2 Newer Article'
     And I should see 'Article: Blog2 Another Article'
 
