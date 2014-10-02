@@ -13,6 +13,12 @@ module Middleman
           @app.define_singleton_method(:proxy, &method(:create_proxy))
 
           @proxy_configs = Set.new
+          @post_config = false
+        end
+
+        def after_configuration
+          @post_config = true
+          @app.add_to_collection_context(:proxy, &method(:create_anonymous_proxy))
         end
 
         # Setup a proxy from a path to a target

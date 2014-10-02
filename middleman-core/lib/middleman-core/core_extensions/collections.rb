@@ -1,7 +1,41 @@
 require 'middleman-core/sitemap/extensions/proxies'
 require 'middleman-core/util'
-require 'middleman-core/core_extensions/collections/collection'
-require 'middleman-core/core_extensions/collections/grouped_collection'
+require 'middleman-core/core_extensions/paginator'
+require 'active_support/core_ext/object/deep_dup'
+
+class Array
+  def per_page(per_page, &block)
+    parts = if per_page.is_a? Fixnum
+      each_slice(per_page).reduce([]) do |sum, items|
+        sum << items
+      end
+    else
+      per_page.call(self.dup)
+    end
+
+    num_pages = parts.length
+
+    collection = self
+
+    # DefaultPaginator.new(app, collection, opts, &block)
+    current_start_i = 0
+    parts.each_with_index do |items, i|
+      num = i + 1
+
+      meta = ::Middleman::Paginator.page_locals(
+        num,
+        num_pages,
+        collection,
+        items,
+        current_start_i
+      )
+
+      yield items, num, meta, num >= num_pages
+
+      current_start_i += items.length
+    end
+  end
+end
 
 module Middleman
   module CoreExtensions
@@ -17,6 +51,7 @@ module Middleman
           super
 
           @collectors_by_name = {}
+          @values_by_name = {}
 
           @root_collector = LazyCollectorRoot.new
         end
@@ -32,13 +67,33 @@ module Middleman
         end
 
         def collector_value(label)
-          @collectors_by_name[label].value
+          @values_by_name[label]
+        end
+
+        def step_context
+          StepContext
         end
 
         Contract ResourceList => ResourceList
         def manipulate_resource_list(resources)
           @root_collector.realize!(resources)
-          resources
+
+          ctx = StepContext.new
+          leafs = LEAFS.dup
+
+          @collectors_by_name.each do |k, v|
+            @values_by_name[k] = v.value(ctx)
+            leafs.delete v
+          end
+
+          # Execute code paths
+          leafs.each do |v|
+            v.value(ctx)
+          end
+
+          # Inject descriptors 
+          # $stderr.puts ctx.descriptors.map(&:path).inspect
+          resources + ctx.descriptors.map { |d| d.to_resource(app) }
         end
 
         helpers do
@@ -63,27 +118,70 @@ module Middleman
           @data = data
         end
 
-        def value
+        def value(ctx=nil)
           @data
         end
 
         def method_missing(name, *args, &block)
-          LazyCollectorStep.new([name, args, block], self)
+          LazyCollectorStep.new(name, args, block, self)
         end
       end
+
+      class StepContext
+        def self.add_to_context(name, &func)
+          send(:define_method, :"_internal_#{name}", &func)
+        end
+
+        attr_reader :descriptors
+
+        def initialize
+          @descriptors = []
+        end
+
+        def method_missing(name, *args, &block)
+          internal = :"_internal_#{name}"
+          if respond_to?(internal)
+            @descriptors << send(internal, *args, &block)
+          else
+            super
+          end
+        end
+
+        # def all_resources(app)
+        #   @descriptors.map { |d| d.to_resource(app) }
+        # end
+      end
+
+      LEAFS = Set.new
 
       class LazyCollectorStep < BasicObject
         DELEGATE = [:hash, :eql?]
 
-        def initialize(computation, parent=nil)
-          @name, @args, @block = computation
+        def initialize(name, args, block, parent=nil)
+          @name = name
+          @args = args
+          @block = block
+
           @parent = parent
           @result = nil
+
+          LEAFS << self
         end
 
-        def value
-          data = @parent.value
-          data.send(@name, *@args, &@block)
+        def value(ctx=nil)
+          data = @parent.value(ctx)
+
+          original_block = @block
+
+          b = if ctx
+            ::Proc.new do |*args|
+              ctx.instance_exec(*args, &original_block)
+            end
+          else
+            original_block
+          end if original_block
+
+          data.send(@name, *@args.deep_dup, &b)
         end
 
         def method_missing(name, *args, &block)
@@ -91,7 +189,9 @@ module Middleman
             return ::Kernel.send(name, *args, &block)
           end
 
-          LazyCollectorStep.new([name, args, block], self)
+          LEAFS.delete self
+
+          LazyCollectorStep.new(name, args, block, self)
         end
       end
     end

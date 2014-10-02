@@ -301,6 +301,10 @@ module Middleman
       @config_context.define_singleton_method(name, &func)
     end
 
+    def add_to_collection_context(name, &func)
+      extensions[:collections].step_context.add_to_context(name, &func)
+    end
+
     # Whether we're in server mode
     # @return [Boolean] If we're in dev mode
     def server?
